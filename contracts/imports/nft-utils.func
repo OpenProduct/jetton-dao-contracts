@@ -1,0 +1,73 @@
+#include "params.func";
+#include "messages.func";
+#include "op-codes.func";
+
+() send_msg(slice to_address, int amount, int op, int query_id, builder payload, int send_mode) impure inline {
+  var msg = begin_cell()
+    .store_uint(0x10, 6) ;; nobounce - int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool packages:MsgAddress -> 011000
+    .store_slice(to_address)
+    .store_coins(amount)
+    .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+    .store_uint(op, 32)
+    .store_uint(query_id, 64);
+
+  if (~ builder_null?(payload)) {
+    msg = msg.store_builder(payload);
+  }
+
+  send_raw_message(msg.end_cell(), send_mode);
+}
+
+() withdraw_tons(int query_id, slice owner_address, int min_tons_for_storage) impure {
+    raw_reserve(min_tons_for_storage, 0);
+
+    var msg = begin_cell()
+        .store_msg_flag(msg_flag::non_bounceable)
+        .store_slice(owner_address)
+        .store_coins(0)
+        .store_msgbody_prefix_slice()
+        .store_op(op::excesses)
+        .store_query_id(query_id);
+
+    return send_raw_message(msg.end_cell(), CARRY_REMAINING_BALANCE | IGNORE_ERRORS);
+}
+
+() withdraw_jettons(int query_id, slice owner_address, int min_tons_for_storage, slice in_msg_body) impure {
+
+    slice child_wallet = in_msg_body~load_msg_addr();
+    int amount = in_msg_body~load_coins();
+    cell custom_payload = in_msg_body~load_maybe_ref();
+    in_msg_body.end_parse();
+
+    var msg = begin_cell()
+        .store_msg_flag(msg_flag::bounceable)
+        .store_slice(child_wallet)
+        .store_coins(0)
+        .store_msgbody_prefix_ref(
+          begin_cell()
+          .store_op(op::transfer)
+          .store_query_id(query_id)
+          .store_coins(amount)
+          .store_slice(owner_address)
+          .store_slice(owner_address)
+          .store_maybe_ref(custom_payload)
+          .store_coins(0)
+          .store_int(false, 1)
+          .end_cell()
+        );
+
+    return send_raw_message(msg.end_cell(), CARRY_REMAINING_GAS);
+}
+
+{-
+  addr_std$10 anycast:(Maybe Anycast)
+   workchain_id:int8 address:bits256  = MsgAddressInt;
+-}
+slice calc_address(cell state_init) inline {
+    return begin_cell()
+        .store_uint(4, 3) ;; 0x100 : $10 + anycast (Maybe = 0)
+        .store_int(workchain, 8)
+        .store_uint(cell_hash(state_init), 256)
+        .end_cell()
+        .begin_parse();
+}

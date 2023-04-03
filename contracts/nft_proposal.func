@@ -1,0 +1,310 @@
+#include "imports/stdlib.func";
+#include "imports/jetton-utils.func";
+#include "imports/dao-utils.func";
+;;#include "imports/error-codes.func";
+#include "imports/op-codes.func";
+#include "imports/params.func";
+#include "imports/messages.func";
+
+
+global int init;
+global slice dao_address;
+global int voting_id;
+global int expiration_date;
+global cell royalty;
+{-
+    proposal$_ minimal_execution_amount:Coins
+                message_to_send:^Cell
+                content:^Cell = Proposal;
+-}
+global cell proposal;
+global cell wallet_code;
+global cell vote_keeper_code;
+global int voted_for;
+global int voted_against;
+global int executed;
+global slice owner_address;
+
+const int min_storage_fee = 50000000;
+const int royalty_fee = 10000000;
+{-
+   uninit$0 jetton_master:MsgAddressInt voting_id:uint64 = Storage;
+-}
+() load_uninit_data() impure {
+    slice cs = get_data().begin_parse();
+    init = cs~load_int(1);
+    throw_if(error::already_inited, init);
+    dao_address = cs~load_msg_addr();
+    voting_id = cs~load_int(64);
+}
+{-
+   init$1 jetton_master:MsgAddressInt voting_id:uint64
+            expiration_date:uint48
+            proposal:^Cell
+            wallet_code:^Cell
+            vote_keeper_code:^Cell
+            voted_for:Coins voted_against:Coins
+            executed:Bool owner_address:MsgAddressInt
+            = Storage;
+-}
+() load_data() impure {
+    slice cs = get_data().begin_parse();
+    init = cs~load_int(1);
+    throw_unless(error::not_inited, init);
+    dao_address = cs~load_msg_addr();
+    voting_id = cs~load_int(64);
+    expiration_date = cs~load_int(48);
+
+    proposal = cs~load_ref();
+    wallet_code = cs~load_ref();
+    vote_keeper_code = cs~load_ref();
+    royalty = cs~load_ref();
+
+    voted_for = cs~load_coins();
+    voted_against = cs~load_coins();
+    executed = cs~load_int(1);
+    owner_address = cs~load_msg_addr();
+}
+
+() save_data() impure {
+    set_data(
+       begin_cell()
+        .store_int(init, 1)
+        .store_slice(dao_address)
+        .store_uint(voting_id, 64)
+        .store_uint(expiration_date, 48)
+        .store_ref(proposal)
+        .store_ref(wallet_code)
+        .store_ref(vote_keeper_code)
+        .store_ref(royalty)
+        .store_coins(voted_for)
+        .store_coins(voted_against)
+        .store_int(executed, 1)
+        .store_slice(owner_address)
+        .end_cell()
+    );
+}
+
+() send_royalty(int query_id, int value, int op_code) impure inline_ref {
+    slice rs = royalty.begin_parse();
+    rs~skip_bits(16);
+    rs~skip_bits(16);
+    slice royalty_address = rs~load_msg_addr();
+    rs.end_parse();
+    
+    builder royalty_msg = begin_cell()
+        .store_msg_flag(msg_flag::non_bounceable)
+        .store_slice(royalty_address)
+        .store_coins(royalty_fee * value)
+        .store_msgbody_prefix_slice()
+        .store_op(op_code)
+        .store_query_id(query_id);
+    send_raw_message(royalty_msg.end_cell(), PAY_FEES_SEPARATELY);
+}
+
+() init_voting(int query_id, slice request) impure inline_ref {
+    expiration_date = request~load_uint(48);
+
+    wallet_code = request~load_ref();
+    vote_keeper_code = request~load_ref();
+    proposal = request~load_ref();
+    royalty = request~load_ref();
+
+    owner_address = request~load_msg_addr();
+    init = true;
+    voted_for = 0;
+    voted_against = 0;
+    executed = false;
+    save_data();
+
+    ;; TODO should depend on proposal size
+    raw_reserve(min_storage_fee, 0);
+
+    send_royalty(query_id, 7, op::send_proposal_royalty);
+
+    var msg = begin_cell()
+            .store_msg_flag(msg_flag::bounceable)
+            .store_slice(owner_address)
+            .store_coins(0)
+            .store_msgbody_prefix_slice()
+            .store_op(op::voting_initiated)
+            .store_query_id(query_id)
+            .store_uint(voting_id, 64)
+            .store_uint(expiration_date, 48);
+
+    send_raw_message(msg.end_cell(), CARRY_REMAINING_BALANCE | IGNORE_ERRORS);
+}
+
+() apply_vote(int balance, slice sender_address, int query_id, slice in_msg_body, int msg_value) impure inline_ref {
+    slice voter = in_msg_body~load_msg_addr();
+    int submitted_expiration_date = in_msg_body~load_uint(48);
+    int weight = in_msg_body~load_coins();
+    int vote = in_msg_body~load_int(1);
+    in_msg_body.end_parse();
+
+    slice voter_wallet = calc_user_wallet(voter, dao_address, wallet_code, vote_keeper_code);
+    slice vote_keeper = calculate_vote_keeper_address(voter_wallet, my_address(), vote_keeper_code);
+
+    throw_unless(error::unauthorized_vote, equal_slice_bits(sender_address, vote_keeper));
+    throw_unless(error::voting_already_finished, now() < expiration_date);
+
+    throw_unless(error::wrong_expiration_date, submitted_expiration_date >= expiration_date);
+
+    if (vote) {
+        voted_for += weight;
+    } else {
+        voted_against += weight;
+    }
+    raw_reserve(max(min_storage_fee, balance - msg_value) , 0);
+
+    send_royalty(query_id, 1, op::send_vote_royalty);
+
+    builder msg = begin_cell()
+        .store_msg_flag(msg_flag::non_bounceable)
+        .store_slice(voter)
+        .store_coins(0)
+        .store_msgbody_prefix_slice()
+        .store_op(op::excesses)
+        .store_query_id(query_id);
+
+    save_data();
+    send_raw_message(msg.end_cell(), CARRY_REMAINING_BALANCE | IGNORE_ERRORS);
+}
+
+() finish_voting(int query_id, int msg_value) impure inline {
+    slice proposal_data = proposal.begin_parse();
+    int minimal_execution_amount = proposal_data~load_coins();
+    cell message_to_send = proposal_data~load_ref();
+
+    throw_if(error::voting_already_executed, executed);
+    throw_unless(error::voting_not_finished, now() > expiration_date);
+    throw_unless(error::not_enough_money, msg_value >= minimal_execution_amount);
+    
+    var msg = begin_cell()
+        .store_msg_flag(msg_flag::non_bounceable)
+        .store_slice(dao_address)
+        .store_coins(0)
+        .store_msgbody_prefix_slice()
+        .store_op(op::execute_vote_result)
+        .store_query_id(query_id)
+        .store_uint(voting_id, 64)
+        .store_uint(expiration_date, 48)
+        .store_coins(voted_for)
+        .store_coins(voted_against)
+        .store_ref(message_to_send);
+
+    executed = true;
+    save_data();
+    send_raw_message(msg.end_cell(), CARRY_REMAINING_GAS);
+}
+
+() transfer_ownership(int my_balance, slice sender_address, int query_id, slice in_msg_body, int fwd_fees) impure inline {
+    throw_unless(401, equal_slices(sender_address, owner_address));
+
+    slice new_owner_address = in_msg_body~load_msg_addr();
+    force_chain(new_owner_address);
+    slice response_destination = in_msg_body~load_msg_addr();
+    in_msg_body~load_int(1); ;; this nft don't use custom_payload
+    int forward_amount = in_msg_body~load_coins();
+
+    int rest_amount = my_balance - min_storage_fee;
+    if (forward_amount) {
+      rest_amount -= (forward_amount + fwd_fees);
+    }
+    int need_response = response_destination.preload_uint(2) != 0; ;; if NOT addr_none: 00
+    if (need_response) {
+      rest_amount -= fwd_fees;
+    }
+
+    throw_unless(402, rest_amount >= 0); ;; base nft spends fixed amount of gas, will not check for response
+
+    owner_address = new_owner_address;
+    save_data();
+
+    if (forward_amount) {
+        builder msg = begin_cell().store_slice(owner_address).store_slice(in_msg_body);
+        send_msg(new_owner_address, forward_amount, op::ownership_assigned, query_id, msg, 1);
+    }
+    if (need_response) {
+        force_chain(response_destination);
+        send_msg(response_destination, rest_amount, op::excesses, query_id, null(), 1);
+    }
+}
+
+() main (int balance, int msg_value, cell in_msg_full, slice in_msg_body) {
+    if (in_msg_body.slice_empty?()) { ;; ignore empty messages
+        return ();
+    }
+
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    if (flags & 1) {
+        return ();
+    }
+    slice sender_address = cs~load_msg_addr();
+    cs~load_msg_addr();
+    cs~load_coins();
+    cs~skip_bits(1);
+    cs~load_coins();
+    int fwd_fee = muldiv(cs~load_coins(), 3, 2);
+
+    int op = in_msg_body~load_op();
+    int query_id = in_msg_body~load_query_id();
+
+    if (op == op::init_voting) {
+        load_uninit_data();
+        throw_unless(error::unauthorized_init, equal_slice_bits(sender_address, dao_address));
+        return init_voting(query_id, in_msg_body);
+    } else {
+        load_data();
+    }
+
+    if (op == op::transfer_nft) {
+        return transfer_ownership(balance, sender_address, query_id, in_msg_body, fwd_fee);
+    }
+    if (op == op::get_static_data) {
+        builder msg = begin_cell().store_uint(voting_id, 256).store_slice(dao_address);
+        return send_msg(sender_address, 0, op::report_static_data, query_id, msg, 64);
+    }
+
+    if (op == op::submit_votes) {
+        return apply_vote(balance, sender_address, query_id, in_msg_body, msg_value);
+    }
+
+    if(op == op::end_voting) {
+        return finish_voting(query_id, msg_value);
+    }
+    throw(error::unknown_op);
+}
+
+
+;;
+;;  GET Methods
+;;
+
+(int, int, slice, slice, cell) get_nft_data() method_id {
+    try {
+        load_data();
+
+        slice proposal_data = proposal.begin_parse();
+        int minimal_execution_amount = proposal_data~load_coins();
+        cell message_to_send = proposal_data~load_ref();
+        cell content = proposal_data~load_ref();
+        return (init, voting_id, dao_address, owner_address, content);
+    } catch (x, y) {
+        load_uninit_data();
+        return (init, voting_id, dao_address, null(), null());
+    }
+}
+
+(int, slice, int, int, cell, cell, int, int, int, slice) get_voting_data() method_id {
+    try {
+        load_data();
+    } catch (x, y) {
+        load_uninit_data();
+    }
+    return (init, dao_address, voting_id, expiration_date,
+            proposal, wallet_code,
+            voted_for, voted_against,
+            executed, owner_address);
+}
