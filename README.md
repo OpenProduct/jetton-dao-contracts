@@ -1,5 +1,12 @@
 # jetton-dao-contracts
 
+## Testnet env
+
+[Testnet](https://dao-viewer-testnet-v2.vercel.app)
+
+[First DAO](https://dao-viewer-testnet-v2.vercel.app/EQCA_CvplU57Pk4mhXJZmZYcf-SfhI-IIV1BStAXXoaNu-sN/)
+
+
 ## unit-tests
 
 ```
