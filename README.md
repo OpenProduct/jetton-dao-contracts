@@ -4,7 +4,7 @@
 
 [Testnet](https://dao-viewer-testnet-v2.vercel.app)
 
-[First DAO](https://dao-viewer-testnet-v2.vercel.app/EQCA_CvplU57Pk4mhXJZmZYcf-SfhI-IIV1BStAXXoaNu-sN/)
+[First DAO](https://dao-viewer-testnet-v2.vercel.app/EQCFSH3MUnhUPdxU9XZ2L16A6D71zbrL7K3dcsJkodGKxaNw/)
 
 
 ## unit-tests
