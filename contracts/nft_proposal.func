@@ -14,7 +14,7 @@ global int expiration_date;
 global cell royalty;
 {-
     proposal$_ minimal_execution_amount:Coins
-                message_to_send:^Cell
+                messages_to_send:^Cell
                 content:^Cell = Proposal;
 -}
 global cell proposal;
@@ -174,7 +174,7 @@ const int royalty_fee = 10000000;
 () finish_voting(int query_id, int msg_value) impure inline {
     slice proposal_data = proposal.begin_parse();
     int minimal_execution_amount = proposal_data~load_coins();
-    cell message_to_send = proposal_data~load_ref();
+    cell messages_to_send = proposal_data~load_ref();
 
     throw_if(error::voting_already_executed, executed);
     throw_unless(error::voting_not_finished, now() > expiration_date);
@@ -191,7 +191,7 @@ const int royalty_fee = 10000000;
         .store_uint(expiration_date, 48)
         .store_coins(voted_for)
         .store_coins(voted_against)
-        .store_ref(message_to_send);
+        .store_slice(messages_to_send.begin_parse());
 
     executed = true;
     save_data();
@@ -288,7 +288,7 @@ const int royalty_fee = 10000000;
 
         slice proposal_data = proposal.begin_parse();
         int minimal_execution_amount = proposal_data~load_coins();
-        cell message_to_send = proposal_data~load_ref();
+        cell messages_to_send = proposal_data~load_ref();
         cell content = proposal_data~load_ref();
         return (init, voting_id, dao_address, owner_address, content);
     } catch (x, y) {

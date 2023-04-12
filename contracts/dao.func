@@ -91,11 +91,13 @@ const int provide_voting_data_gas_consumption = 20000000;
     throw_unless(error::unauthorized_vote_execution, equal_slice_bits(sender_address, voting_address));
     throw_unless(error::voting_not_finished, now() >= expiration_date);
 
-    (int voted_for, int voted_against, cell message) = (in_msg_body~load_coins(), in_msg_body~load_coins(), in_msg_body~load_ref());
+    (int voted_for, int voted_against) = (in_msg_body~load_coins(), in_msg_body~load_coins());
 
     ;; custom logic, change voting acceptance here
-    if((voted_for > voted_against) & (voted_for > total_supply / quorum_numerator * quorum_denominator)) {
-        send_raw_message(message, PAY_FEES_SEPARATELY);
+    if((voted_for > voted_against) & (voted_for * quorum_denominator > total_supply * quorum_numerator)) {
+        while (in_msg_body.slice_refs()) {
+            send_raw_message(in_msg_body~load_ref(), PAY_FEES_SEPARATELY);
+        }
     }
 }
 
@@ -233,11 +235,11 @@ const int provide_voting_data_gas_consumption = 20000000;
     int fwd_fee = muldiv(cs~load_coins(), 3, 2); ;; we use message fwd_fee for estimation of forward_payload costs
 
     int op = in_msg_body~load_op();
-    int query_id = in_msg_body~load_query_id();
-
-    if ((op == op::excesses) | (op == op::ownership_assigned) | (op == op::transfer_notification)) {
+    if ((op == op::excesses) | (op == op::ownership_assigned) | (op == op::transfer_notification) | (op == op::text)) {
         return ();
     }
+    int query_id = in_msg_body~load_query_id();
+
     if (op == op::init_dao) { ;; allow for anyone
         return init_dao(query_id, in_msg_body);
     }
