@@ -38,7 +38,7 @@ const int gas_consumption = 19000000;
          );
 }
 
-(int, slice, slice, cell, int, int, cell) load_data() inline {
+(int, slice, slice, cell, int, int, cell) load_data() {
   (int balance, slice owner_address,
           slice jetton_master_address, cell jetton_wallet_code,
           int locked, int lock_expiration,
@@ -51,10 +51,10 @@ const int gas_consumption = 19000000;
   return (balance, owner_address, jetton_master_address, jetton_wallet_code, locked, lock_expiration, vote_keeper_code);
 }
 
-() save_data (int balance, slice owner_address,
+() save_data(int balance, slice owner_address,
               slice jetton_master_address, cell jetton_wallet_code,
               int locked, int lock_expiration,
-              cell vote_keeper_code) impure inline {
+              cell vote_keeper_code) impure {
   set_data(
     pack_jetton_wallet_data(
       balance,
@@ -360,4 +360,14 @@ const int gas_consumption = 19000000;
           cell vote_keeper_code) = load_data();
   cell vote_keeper_initstate = calculate_vote_keeper_state_init (my_address(), voting_address, vote_keeper_code);
   return calc_address(vote_keeper_initstate);
+}
+
+;; New Locked Jetton wallet TEP
+
+(int, int, int) get_locked_balance() method_id {
+  (int balance, slice owner_address,
+          slice jetton_master_address, cell jetton_wallet_code,
+          int locked, int lock_expiration,
+          cell vote_keeper_code) = load_data();
+  return (balance, locked, lock_expiration);
 }
